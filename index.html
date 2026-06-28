@@ -348,27 +348,37 @@
     ];
 
     async function loadConfig() {
-      try {
-        const cacheBuster = Date.now();
-        const response = await fetch(`./config.json?v=${cacheBuster}`, {
-          cache: "no-store"
-        });
+  try {
+    const cacheBuster = Date.now();
+    const response = await fetch(`./config.json?v=${cacheBuster}`, {
+      cache: "no-store"
+    });
 
-        if (!response.ok) {
-          throw new Error(`config.json HTTP ${response.status}`);
-        }
-
-        const config = await response.json();
-        appConfig = normalizeConfig(config);
-        applyConfig();
-
-        console.log("config.json 로드 완료:", appConfig);
-      } catch (err) {
-        console.warn("config.json을 불러오지 못해 기본 설정을 사용합니다.", err);
-        appConfig = { ...DEFAULT_CONFIG };
-        applyConfig();
-      }
+    if (!response.ok) {
+      throw new Error(`config.json HTTP ${response.status}`);
     }
+
+    // config.json을 텍스트로 먼저 읽음
+    const text = await response.text();
+
+    // JSON 안의 주석 제거
+    const jsonText = text
+      .replace(/\/\*[\s\S]*?\*\//g, "")  // /* 여러 줄 주석 제거 */
+      .replace(/^\s*\/\/.*$/gm, "");    // // 한 줄 주석 제거
+
+    // 주석이 제거된 텍스트를 JSON으로 변환
+    const config = JSON.parse(jsonText);
+
+    appConfig = normalizeConfig(config);
+    applyConfig();
+
+    console.log("config.json 로드 완료:", appConfig);
+  } catch (err) {
+    console.warn("config.json을 불러오지 못해 기본 설정을 사용합니다.", err);
+    appConfig = { ...DEFAULT_CONFIG };
+    applyConfig();
+  }
+}
 
     function normalizeConfig(config) {
       const rawMode = String(config.mode ?? DEFAULT_CONFIG.mode).trim().toLowerCase();
