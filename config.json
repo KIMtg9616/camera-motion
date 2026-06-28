@@ -2,6 +2,9 @@
   // motion: 기존 모션 분석, coin: 코인 게임
   "mode": "coin",
 
+  // true: 카메라 좌우반전, false: 기본 방향
+  "mirrorCamera": true,
+
   // 화면에서 1m가 몇 px인지
   "meterPixels": 350,
 
