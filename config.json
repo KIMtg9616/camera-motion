@@ -1,5 +1,11 @@
 {
+  "mode": "motion",
   "meterPixels": 350,
   "trailSeconds": 10,
-  "configRefreshMs": 5000
+  "configRefreshMs": 5000,
+  "coinGameSeconds": 60,
+  "coinCount": 8,
+  "coinRadius": 30,
+  "coinMinValue": 10,
+  "coinMaxValue": 100
 }
