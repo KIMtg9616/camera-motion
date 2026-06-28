@@ -1,0 +1,5 @@
+{
+  "meterPixels": 300,
+  "trailSeconds": 10,
+  "configRefreshMs": 5000
+}
