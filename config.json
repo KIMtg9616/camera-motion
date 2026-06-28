@@ -1,6 +1,6 @@
 {
   // motion: 기존 모션 분석, coin: 코인 게임
-  "mode": "motion",
+  "mode": "coin",
   
   // 화면에서 1m가 몇 px인지
   "meterPixels": 350,
