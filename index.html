@@ -182,6 +182,17 @@
       color: #94a3b8;
     }
 
+    .score-line {
+      font-size: 16px;
+      font-weight: 800;
+      color: #facc15;
+    }
+
+    .winner {
+      color: #fde68a;
+      font-weight: 900;
+    }
+
     /* 작은 화면에서는 패널을 아래쪽으로 이동 */
     @media (max-width: 900px) {
       header {
@@ -214,7 +225,7 @@
 <body>
   <header>
     <h1>웹캠 사람 운동 분석</h1>
-    <p>사람의 중심 이동을 추적하여 최근 10초 궤적, 속도, 가속도를 표시합니다.</p>
+    <p>사람의 중심 이동을 추적하여 최근 궤적, 속도, 가속도 또는 코인 게임을 표시합니다.</p>
   </header>
 
   <main>
@@ -232,7 +243,7 @@
       </div>
 
       <div class="hint">
-        실제 단위 보정값은 <b>config.json</b>의 <b>meterPixels</b>에서 설정합니다.<br>
+        모드와 실제 단위 보정값은 <b>config.json</b>에서 설정합니다.<br>
         <span id="configInfo">설정값을 불러오는 중입니다.</span>
       </div>
 
@@ -268,21 +279,39 @@
     /*
       설정값은 config.json에서 불러옵니다.
 
+      mode:
+      - "motion": 기존 모션 분석 모드
+      - "coin": 화면에 랜덤으로 표시되는 코인을 손으로 잡는 게임 모드
+
       meterPixels:
       - null 또는 0 이하: px/s, px/s² 단위로 표시
       - 300처럼 양수: 화면에서 1m가 300px이라는 뜻이며, m/s, m/s²로 표시
 
-      configRefreshMs:
-      - GitHub Pages에서 config.json 수정 후 새로고침 없이 반영하고 싶을 때 사용하는 설정입니다.
-      - GitHub Pages 반영/캐시 지연이 있을 수 있으므로, 즉시 반영이 필요하면 브라우저 새로고침을 권장합니다.
+      coinGameSeconds:
+      - coin 모드 제한시간입니다.
+
+      coinCount:
+      - 화면에 동시에 표시되는 코인 개수입니다.
+
+      coinMinValue, coinMaxValue:
+      - 코인 액수 범위입니다. 실제 코인 값은 10 단위로 랜덤 생성됩니다.
     */
     const DEFAULT_CONFIG = {
+      mode: "motion",
       meterPixels: null,
       trailSeconds: 10,
-      configRefreshMs: 5000
+      configRefreshMs: 5000,
+
+      coinGameSeconds: 60,
+      coinCount: 8,
+      coinRadius: 30,
+      coinMinValue: 10,
+      coinMaxValue: 100
     };
 
     let appConfig = { ...DEFAULT_CONFIG };
+    let previousMode = DEFAULT_CONFIG.mode;
+    let configTimer = null;
     let TRAIL_MS = DEFAULT_CONFIG.trailSeconds * 1000;
 
     const TRACK_ALIVE_MS = 1200;
@@ -290,6 +319,16 @@
 
     let nextTrackId = 1;
     const tracks = new Map();
+
+    const coinGame = {
+      active: false,
+      startedAt: 0,
+      endsAt: 0,
+      gameOver: false,
+      coins: [],
+      scores: new Map(),
+      nextCoinId: 1
+    };
 
     const COLORS = [
       "#ff3b30", "#34c759", "#007aff", "#ffcc00",
@@ -332,11 +371,29 @@
     }
 
     function normalizeConfig(config) {
+      const rawMode = String(config.mode ?? DEFAULT_CONFIG.mode).trim().toLowerCase();
+      const mode = rawMode === "coin" ? "coin" : "motion";
+
       const meterPixels = Number(config.meterPixels);
       const trailSeconds = Number(config.trailSeconds);
       const configRefreshMs = Number(config.configRefreshMs);
 
+      const coinGameSeconds = Number(config.coinGameSeconds);
+      const coinCount = Number(config.coinCount);
+      const coinRadius = Number(config.coinRadius);
+      const coinMinValue = Number(config.coinMinValue);
+      const coinMaxValue = Number(config.coinMaxValue);
+
+      const minValue = Number.isFinite(coinMinValue) && coinMinValue >= 10
+        ? Math.round(coinMinValue / 10) * 10
+        : DEFAULT_CONFIG.coinMinValue;
+
+      const maxValue = Number.isFinite(coinMaxValue) && coinMaxValue >= minValue
+        ? Math.round(coinMaxValue / 10) * 10
+        : Math.max(DEFAULT_CONFIG.coinMaxValue, minValue);
+
       return {
+        mode,
         meterPixels:
           Number.isFinite(meterPixels) && meterPixels > 0
             ? meterPixels
@@ -348,22 +405,76 @@
         configRefreshMs:
           Number.isFinite(configRefreshMs) && configRefreshMs >= 1000
             ? configRefreshMs
-            : DEFAULT_CONFIG.configRefreshMs
+            : DEFAULT_CONFIG.configRefreshMs,
+
+        coinGameSeconds:
+          Number.isFinite(coinGameSeconds) && coinGameSeconds > 0
+            ? coinGameSeconds
+            : DEFAULT_CONFIG.coinGameSeconds,
+        coinCount:
+          Number.isFinite(coinCount) && coinCount > 0
+            ? Math.min(Math.round(coinCount), 30)
+            : DEFAULT_CONFIG.coinCount,
+        coinRadius:
+          Number.isFinite(coinRadius) && coinRadius >= 12
+            ? Math.min(Math.round(coinRadius), 80)
+            : DEFAULT_CONFIG.coinRadius,
+        coinMinValue: minValue,
+        coinMaxValue: maxValue
       };
     }
 
     function applyConfig() {
+      const modeChanged = previousMode !== appConfig.mode;
+      previousMode = appConfig.mode;
+
       TRAIL_MS = appConfig.trailSeconds * 1000;
 
-      if (appConfig.meterPixels) {
+      const modeText = appConfig.mode === "coin"
+        ? "coin / 코인 잡기 게임"
+        : "motion / 기존 모션 분석";
+
+      const meterText = appConfig.meterPixels
+        ? `1m = ${appConfig.meterPixels}px, m/s와 m/s² 표시`
+        : `보정 사용 안 함, px/s와 px/s² 표시`;
+
+      if (appConfig.mode === "coin") {
         configInfoEl.innerHTML =
-          `현재 보정값: <b>1m = ${appConfig.meterPixels}px</b><br>` +
-          `속도/가속도는 m/s, m/s²로 표시됩니다.`;
+          `현재 모드: <b>${modeText}</b><br>` +
+          `보정값: <b>${meterText}</b><br>` +
+          `게임 제한시간: <b>${appConfig.coinGameSeconds}초</b>, ` +
+          `코인 수: <b>${appConfig.coinCount}개</b>, ` +
+          `코인 액수: <b>${appConfig.coinMinValue}~${appConfig.coinMaxValue}</b>`;
       } else {
         configInfoEl.innerHTML =
-          `현재 보정값: <b>사용 안 함</b><br>` +
-          `속도/가속도는 px/s, px/s²로 표시됩니다.`;
+          `현재 모드: <b>${modeText}</b><br>` +
+          `보정값: <b>${meterText}</b><br>` +
+          `궤적 유지: <b>${appConfig.trailSeconds}초</b>`;
       }
+
+      if (modeChanged) {
+        if (appConfig.mode === "coin") {
+          resetCoinGame(performance.now());
+        } else {
+          clearCoinGame();
+        }
+      }
+
+      if (appConfig.mode === "coin" && coinGame.active && !coinGame.gameOver) {
+        adjustCoinCount();
+      }
+
+      restartConfigPolling();
+    }
+
+    function restartConfigPolling() {
+      if (configTimer) {
+        clearInterval(configTimer);
+      }
+
+      configTimer = setInterval(() => {
+        loadConfig();
+      }, appConfig.configRefreshMs);
     }
 
     async function initPoseLandmarker() {
@@ -413,10 +524,6 @@
       }
 
       try {
-        /*
-          전체화면은 브라우저 정책상 버튼 클릭 같은 사용자 동작 직후에 잘 작동합니다.
-          그래서 카메라 시작 버튼을 누른 직후 전체화면 전환을 먼저 시도합니다.
-        */
         await requestBrowserFullscreen();
 
         stream = await navigator.mediaDevices.getUserMedia({
@@ -439,17 +546,22 @@
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
 
-        /*
-          일부 브라우저에서는 카메라 권한 허용 후 전체화면 요청이 더 잘 작동할 수 있어
-          한 번 더 전체화면 전환을 시도합니다.
-        */
         await requestBrowserFullscreen();
 
         running = true;
         startBtn.disabled = true;
         stopBtn.disabled = false;
 
-        statusEl.textContent = "측정 중입니다. 사람의 중심 이동 궤적이 최근 설정 시간 동안 표시됩니다.";
+        tracks.clear();
+
+        if (appConfig.mode === "coin") {
+          resetCoinGame(performance.now());
+          statusEl.textContent = "코인 게임 중입니다. 손목으로 코인을 잡아 점수를 얻으세요.";
+        } else {
+          clearCoinGame();
+          statusEl.textContent = "측정 중입니다. 사람의 중심 이동 궤적이 최근 설정 시간 동안 표시됩니다.";
+        }
+
         requestAnimationFrame(renderLoop);
       } catch (err) {
         console.error(err);
@@ -468,6 +580,7 @@
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       tracks.clear();
+      clearCoinGame();
 
       startBtn.disabled = false;
       stopBtn.disabled = true;
@@ -494,6 +607,11 @@
 
         updateTracks(landmarks, now);
         removeOldTrailPoints(now);
+
+        if (appConfig.mode === "coin") {
+          updateCoinGame(now);
+        }
+
         drawScene(now);
         updateMetrics(now);
       }
@@ -649,6 +767,11 @@
           drawLabel(track);
         }
       }
+
+      if (appConfig.mode === "coin") {
+        drawCoins();
+        drawCoinHud(now);
+      }
     }
 
     function drawTrail(track, now) {
@@ -718,27 +841,37 @@
 
     function drawLabel(track) {
       const { speedText, accelText } = getMotionText(track);
+      const score = getTrackScore(track.id);
 
       ctx.save();
       ctx.font = "bold 18px system-ui";
       ctx.textBaseline = "top";
 
-      const text1 = `사람 ${track.id}`;
-      const text2 = `v ${speedText}`;
-      const text3 = `a ${accelText}`;
+      const lines = appConfig.mode === "coin"
+        ? [
+            { text: `사람 ${track.id}`, color: track.color },
+            { text: `점수 ${score}`, color: "#facc15" },
+            { text: `v ${speedText}`, color: "#ffffff" },
+            { text: `a ${accelText}`, color: "#ffffff" }
+          ]
+        : [
+            { text: `사람 ${track.id}`, color: track.color },
+            { text: `v ${speedText}`, color: "#ffffff" },
+            { text: `a ${accelText}`, color: "#ffffff" }
+          ];
 
-      const x = clamp(track.x + 14, 8, canvas.width - 210);
-      const y = clamp(track.y - 54, 8, canvas.height - 80);
+      const boxW = 220;
+      const boxH = 16 + lines.length * 24;
+      const x = clamp(track.x + 14, 8, canvas.width - boxW - 10);
+      const y = clamp(track.y - 54, 8, canvas.height - boxH - 10);
 
       ctx.fillStyle = "rgba(2, 6, 23, 0.72)";
-      ctx.fillRect(x - 8, y - 6, 210, 76);
+      ctx.fillRect(x - 8, y - 6, boxW, boxH);
 
-      ctx.fillStyle = track.color;
-      ctx.fillText(text1, x, y);
-
-      ctx.fillStyle = "#ffffff";
-      ctx.fillText(text2, x, y + 24);
-      ctx.fillText(text3, x, y + 48);
+      lines.forEach((line, index) => {
+        ctx.fillStyle = line.color;
+        ctx.fillText(line.text, x, y + index * 24);
+      });
 
       ctx.restore();
     }
@@ -746,10 +879,58 @@
     function updateMetrics(now) {
       const activeTracks = [...tracks.values()]
         .filter(track => now - track.lastSeen < 1000)
-        .sort((a, b) => a.id - b.id);
+        .sort((a, b) => {
+          if (appConfig.mode === "coin") {
+            return getTrackScore(b.id) - getTrackScore(a.id);
+          }
+          return a.id - b.id;
+        });
 
       if (activeTracks.length === 0) {
-        metricsEl.textContent = "감지된 사람이 없습니다.";
+        if (appConfig.mode === "coin" && coinGame.active) {
+          const remaining = getGameRemainingSeconds(now);
+          metricsEl.innerHTML =
+            `<div class="person-card">
+              <strong style="color:#facc15">코인 게임</strong>
+              <div>남은 시간: ${remaining}초</div>
+              <div>감지된 사람이 없습니다.</div>
+              <div class="small">손목으로 코인에 닿으면 점수를 얻습니다.</div>
+            </div>`;
+        } else {
+          metricsEl.textContent = "감지된 사람이 없습니다.";
+        }
+        return;
+      }
+
+      if (appConfig.mode === "coin") {
+        const remaining = getGameRemainingSeconds(now);
+        const winnerText = coinGame.gameOver ? getWinnerText() : "";
+
+        metricsEl.innerHTML =
+          `<div class="person-card" style="border-left-color:#facc15">
+            <strong style="color:#facc15">코인 게임</strong>
+            <div>남은 시간: ${remaining}초</div>
+            <div>코인 액수: ${appConfig.coinMinValue}~${appConfig.coinMaxValue}, 10 단위 랜덤</div>
+            ${winnerText ? `<div class="winner">${winnerText}</div>` : ""}
+            <div class="small">왼손/오른손 손목으로 코인을 잡으세요.</div>
+          </div>` +
+          activeTracks.map(track => {
+            const { speedText, accelText } = getMotionText(track);
+            const x = Math.round(track.x);
+            const y = Math.round(track.y);
+            const score = getTrackScore(track.id);
+
+            return `
+              <div class="person-card" style="border-left-color:${track.color}">
+                <strong style="color:${track.color}">사람 ${track.id}</strong>
+                <div class="score-line">점수: ${score}</div>
+                <div>중심 위치: (${x}, ${y}) px</div>
+                <div>속도: ${speedText}</div>
+                <div>가속도: ${accelText}</div>
+              </div>
+            `;
+          }).join("");
+
         return;
       }
 
@@ -768,6 +949,253 @@
           </div>
         `;
       }).join("");
+    }
+
+    function resetCoinGame(now) {
+      clearCoinGame();
+
+      if (!canvas.width || !canvas.height) return;
+
+      coinGame.active = true;
+      coinGame.startedAt = now;
+      coinGame.endsAt = now + appConfig.coinGameSeconds * 1000;
+      coinGame.gameOver = false;
+      coinGame.nextCoinId = 1;
+      coinGame.coins = [];
+      coinGame.scores = new Map();
+
+      for (let i = 0; i < appConfig.coinCount; i++) {
+        coinGame.coins.push(createCoin());
+      }
+    }
+
+    function clearCoinGame() {
+      coinGame.active = false;
+      coinGame.startedAt = 0;
+      coinGame.endsAt = 0;
+      coinGame.gameOver = false;
+      coinGame.coins = [];
+      coinGame.scores = new Map();
+      coinGame.nextCoinId = 1;
+    }
+
+    function adjustCoinCount() {
+      while (coinGame.coins.length < appConfig.coinCount) {
+        coinGame.coins.push(createCoin());
+      }
+
+      while (coinGame.coins.length > appConfig.coinCount) {
+        coinGame.coins.pop();
+      }
+    }
+
+    function updateCoinGame(now) {
+      if (!coinGame.active) {
+        resetCoinGame(now);
+      }
+
+      if (coinGame.gameOver) return;
+
+      if (now >= coinGame.endsAt) {
+        coinGame.gameOver = true;
+        statusEl.textContent = `게임 종료. ${getWinnerText()}`;
+        return;
+      }
+
+      for (const track of tracks.values()) {
+        if (now - track.lastSeen > 400 || !track.landmarks) continue;
+
+        if (!coinGame.scores.has(track.id)) {
+          coinGame.scores.set(track.id, 0);
+        }
+
+        const wristPoints = getWristPoints(track.landmarks);
+        if (wristPoints.length === 0) continue;
+
+        for (const coin of coinGame.coins) {
+          for (const wrist of wristPoints) {
+            const hitDistance = coin.radius + 18;
+
+            if (distance(wrist.x, wrist.y, coin.x, coin.y) <= hitDistance) {
+              addScore(track.id, coin.value);
+              respawnCoin(coin);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    function createCoin() {
+      const radius = appConfig.coinRadius;
+      const margin = radius + 20;
+
+      return {
+        id: coinGame.nextCoinId++,
+        x: randomBetween(margin, Math.max(margin, canvas.width - margin)),
+        y: randomBetween(margin, Math.max(margin, canvas.height - margin)),
+        radius,
+        value: randomCoinValue()
+      };
+    }
+
+    function respawnCoin(coin) {
+      const radius = appConfig.coinRadius;
+      const margin = radius + 20;
+
+      coin.x = randomBetween(margin, Math.max(margin, canvas.width - margin));
+      coin.y = randomBetween(margin, Math.max(margin, canvas.height - margin));
+      coin.radius = radius;
+      coin.value = randomCoinValue();
+    }
+
+    function randomCoinValue() {
+      const minStep = Math.ceil(appConfig.coinMinValue / 10);
+      const maxStep = Math.max(minStep, Math.floor(appConfig.coinMaxValue / 10));
+      return randomInt(minStep, maxStep) * 10;
+    }
+
+    function drawCoins() {
+      if (!coinGame.active || coinGame.gameOver) return;
+
+      for (const coin of coinGame.coins) {
+        ctx.save();
+
+        const gradient = ctx.createRadialGradient(
+          coin.x - coin.radius * 0.35,
+          coin.y - coin.radius * 0.35,
+          4,
+          coin.x,
+          coin.y,
+          coin.radius
+        );
+
+        gradient.addColorStop(0, "#fff7ad");
+        gradient.addColorStop(0.45, "#facc15");
+        gradient.addColorStop(1, "#ca8a04");
+
+        ctx.fillStyle = gradient;
+        ctx.strokeStyle = "rgba(255,255,255,0.95)";
+        ctx.lineWidth = 4;
+
+        ctx.beginPath();
+        ctx.arc(coin.x, coin.y, coin.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.strokeStyle = "rgba(120, 53, 15, 0.45)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(coin.x, coin.y, coin.radius * 0.72, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = "#451a03";
+        ctx.font = `bold ${Math.max(14, Math.round(coin.radius * 0.58))}px system-ui`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(coin.value), coin.x, coin.y);
+
+        ctx.restore();
+      }
+    }
+
+    function drawCoinHud(now) {
+      if (!coinGame.active) return;
+
+      const remaining = getGameRemainingSeconds(now);
+      const scores = [...coinGame.scores.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4);
+
+      ctx.save();
+      ctx.font = "bold 24px system-ui";
+      ctx.textBaseline = "top";
+
+      const lines = [
+        `COIN MODE`,
+        `남은 시간: ${remaining}초`
+      ];
+
+      if (scores.length > 0) {
+        for (const [id, score] of scores) {
+          lines.push(`사람 ${id}: ${score}점`);
+        }
+      } else {
+        lines.push("손목으로 코인을 잡으세요");
+      }
+
+      if (coinGame.gameOver) {
+        lines.push(getWinnerText());
+      }
+
+      const boxW = 310;
+      const boxH = 18 + lines.length * 30;
+      const x = 18;
+      const y = Math.min(canvas.height - boxH - 16, 118);
+
+      ctx.fillStyle = "rgba(2, 6, 23, 0.72)";
+      ctx.fillRect(x, y, boxW, boxH);
+
+      lines.forEach((line, index) => {
+        ctx.fillStyle = index === 0 ? "#facc15" : "#ffffff";
+        ctx.fillText(line, x + 14, y + 10 + index * 30);
+      });
+
+      ctx.restore();
+    }
+
+    function getWristPoints(landmarks) {
+      const points = [];
+      const wristIndexes = [15, 16];
+
+      for (const index of wristIndexes) {
+        const lm = landmarks[index];
+        if (!isVisible(lm)) continue;
+
+        points.push({
+          x: clamp(lm.x, 0, 1) * canvas.width,
+          y: clamp(lm.y, 0, 1) * canvas.height
+        });
+      }
+
+      return points;
+    }
+
+    function addScore(trackId, value) {
+      const prev = coinGame.scores.get(trackId) || 0;
+      coinGame.scores.set(trackId, prev + value);
+    }
+
+    function getTrackScore(trackId) {
+      return coinGame.scores.get(trackId) || 0;
+    }
+
+    function getGameRemainingSeconds(now) {
+      if (!coinGame.active) return appConfig.coinGameSeconds;
+      return Math.max(0, Math.ceil((coinGame.endsAt - now) / 1000));
+    }
+
+    function getWinnerText() {
+      const scores = [...coinGame.scores.entries()];
+
+      if (scores.length === 0) {
+        return "승자 없음";
+      }
+
+      scores.sort((a, b) => b[1] - a[1]);
+
+      const topScore = scores[0][1];
+      const winners = scores.filter(([, score]) => score === topScore);
+
+      if (topScore <= 0) {
+        return "승자 없음";
+      }
+
+      if (winners.length > 1) {
+        return `공동 우승: ${winners.map(([id]) => `사람 ${id}`).join(", ")} / ${topScore}점`;
+      }
+
+      return `우승: 사람 ${winners[0][0]} / ${topScore}점`;
     }
 
     function getMotionText(track) {
@@ -801,16 +1229,19 @@
       return Math.min(max, Math.max(min, value));
     }
 
+    function randomBetween(min, max) {
+      return min + Math.random() * (max - min);
+    }
+
+    function randomInt(min, max) {
+      return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+
     startBtn.disabled = true;
     startBtn.addEventListener("click", startCamera);
     stopBtn.addEventListener("click", stopCamera);
 
     await loadConfig();
-
-    setInterval(() => {
-      loadConfig();
-    }, appConfig.configRefreshMs);
-
     initPoseLandmarker();
   </script>
 </body>
