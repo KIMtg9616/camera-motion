@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
   <title>웹캠 사람 운동 분석</title>
 
   <style>
@@ -142,23 +142,6 @@
       cursor: not-allowed;
     }
 
-    label {
-      display: grid;
-      gap: 6px;
-      font-size: 14px;
-      color: #cbd5e1;
-    }
-
-    input {
-      width: 100%;
-      padding: 10px;
-      border-radius: 10px;
-      border: 1px solid #475569;
-      background: #0f172a;
-      color: #f8fafc;
-      font-size: 15px;
-    }
-
     .hint {
       font-size: 13px;
       color: #94a3b8;
@@ -226,7 +209,6 @@
       }
     }
   </style>
-
 </head>
 
 <body>
@@ -241,35 +223,26 @@
       <canvas id="overlay"></canvas>
     </section>
 
-```
-<aside class="panel">
-  <h2>측정 제어</h2>
+    <aside class="panel">
+      <h2>측정 제어</h2>
 
-  <div class="controls">
-    <button id="startBtn">카메라 시작</button>
-    <button id="stopBtn" disabled>정지</button>
+      <div class="controls">
+        <button id="startBtn">카메라 시작</button>
+        <button id="stopBtn" disabled>정지</button>
+      </div>
 
-    <label>
-      실제 단위 보정 선택사항
-      <input id="meterPixels" type="number" min="1" step="1"
-             placeholder="예: 화면에서 1m가 300px이면 300 입력" />
-    </label>
-  </div>
+      <div class="hint">
+        실제 단위 보정값은 <b>config.json</b>의 <b>meterPixels</b>에서 설정합니다.<br>
+        <span id="configInfo">설정값을 불러오는 중입니다.</span>
+      </div>
 
-  <div class="hint">
-    입력칸을 비워두면 속도는 <b>px/s</b>, 가속도는 <b>px/s²</b>로 표시됩니다.<br>
-    실제 단위가 필요하면 화면 안에 1m 기준 물체를 두고, 그 길이가 화면에서 몇 픽셀인지 입력하세요.
-  </div>
+      <div id="status">모델을 불러오는 중입니다.</div>
 
-  <div id="status">모델을 불러오는 중입니다.</div>
-
-  <h2>실시간 분석값</h2>
-  <div id="metrics">
-    아직 측정값이 없습니다.
-  </div>
-</aside>
-```
-
+      <h2>실시간 분석값</h2>
+      <div id="metrics">
+        아직 측정값이 없습니다.
+      </div>
+    </aside>
   </main>
 
   <script type="module">
@@ -286,13 +259,32 @@
     const stopBtn = document.getElementById("stopBtn");
     const statusEl = document.getElementById("status");
     const metricsEl = document.getElementById("metrics");
-    const meterPixelsInput = document.getElementById("meterPixels");
+    const configInfoEl = document.getElementById("configInfo");
 
     let poseLandmarker = null;
     let stream = null;
     let running = false;
 
-    const TRAIL_MS = 10000;
+    /*
+      설정값은 config.json에서 불러옵니다.
+
+      meterPixels:
+      - null 또는 0 이하: px/s, px/s² 단위로 표시
+      - 300처럼 양수: 화면에서 1m가 300px이라는 뜻이며, m/s, m/s²로 표시
+
+      configRefreshMs:
+      - GitHub Pages에서 config.json 수정 후 새로고침 없이 반영하고 싶을 때 사용하는 설정입니다.
+      - GitHub Pages 반영/캐시 지연이 있을 수 있으므로, 즉시 반영이 필요하면 브라우저 새로고침을 권장합니다.
+    */
+    const DEFAULT_CONFIG = {
+      meterPixels: null,
+      trailSeconds: 10,
+      configRefreshMs: 5000
+    };
+
+    let appConfig = { ...DEFAULT_CONFIG };
+    let TRAIL_MS = DEFAULT_CONFIG.trailSeconds * 1000;
+
     const TRACK_ALIVE_MS = 1200;
     const MIN_LANDMARK_VISIBILITY = 0.35;
 
@@ -315,6 +307,64 @@
       [15, 17], [15, 19], [15, 21],
       [16, 18], [16, 20], [16, 22]
     ];
+
+    async function loadConfig() {
+      try {
+        const cacheBuster = Date.now();
+        const response = await fetch(`./config.json?v=${cacheBuster}`, {
+          cache: "no-store"
+        });
+
+        if (!response.ok) {
+          throw new Error(`config.json HTTP ${response.status}`);
+        }
+
+        const config = await response.json();
+        appConfig = normalizeConfig(config);
+        applyConfig();
+
+        console.log("config.json 로드 완료:", appConfig);
+      } catch (err) {
+        console.warn("config.json을 불러오지 못해 기본 설정을 사용합니다.", err);
+        appConfig = { ...DEFAULT_CONFIG };
+        applyConfig();
+      }
+    }
+
+    function normalizeConfig(config) {
+      const meterPixels = Number(config.meterPixels);
+      const trailSeconds = Number(config.trailSeconds);
+      const configRefreshMs = Number(config.configRefreshMs);
+
+      return {
+        meterPixels:
+          Number.isFinite(meterPixels) && meterPixels > 0
+            ? meterPixels
+            : null,
+        trailSeconds:
+          Number.isFinite(trailSeconds) && trailSeconds > 0
+            ? trailSeconds
+            : DEFAULT_CONFIG.trailSeconds,
+        configRefreshMs:
+          Number.isFinite(configRefreshMs) && configRefreshMs >= 1000
+            ? configRefreshMs
+            : DEFAULT_CONFIG.configRefreshMs
+      };
+    }
+
+    function applyConfig() {
+      TRAIL_MS = appConfig.trailSeconds * 1000;
+
+      if (appConfig.meterPixels) {
+        configInfoEl.innerHTML =
+          `현재 보정값: <b>1m = ${appConfig.meterPixels}px</b><br>` +
+          `속도/가속도는 m/s, m/s²로 표시됩니다.`;
+      } else {
+        configInfoEl.innerHTML =
+          `현재 보정값: <b>사용 안 함</b><br>` +
+          `속도/가속도는 px/s, px/s²로 표시됩니다.`;
+      }
+    }
 
     async function initPoseLandmarker() {
       const vision = await FilesetResolver.forVisionTasks(
@@ -399,7 +449,7 @@
         startBtn.disabled = true;
         stopBtn.disabled = false;
 
-        statusEl.textContent = "측정 중입니다. 사람의 중심 이동 궤적이 최근 10초 동안 표시됩니다.";
+        statusEl.textContent = "측정 중입니다. 사람의 중심 이동 궤적이 최근 설정 시간 동안 표시됩니다.";
         requestAnimationFrame(renderLoop);
       } catch (err) {
         console.error(err);
@@ -490,6 +540,7 @@
 
     function createTrack(center, now) {
       const id = nextTrackId++;
+
       return {
         id,
         color: COLORS[(id - 1) % COLORS.length],
@@ -645,6 +696,7 @@
       for (const [a, b] of POSE_CONNECTIONS) {
         const p1 = landmarks[a];
         const p2 = landmarks[b];
+
         if (!isVisible(p1) || !isVisible(p2)) continue;
 
         ctx.beginPath();
@@ -712,14 +764,14 @@
             <div>중심 위치: (${x}, ${y}) px</div>
             <div>속도: ${speedText}</div>
             <div>가속도: ${accelText}</div>
-            <div class="small">궤적 유지: 최근 10초</div>
+            <div class="small">궤적 유지: 최근 ${appConfig.trailSeconds}초</div>
           </div>
         `;
       }).join("");
     }
 
     function getMotionText(track) {
-      const meterPixels = Number(meterPixelsInput.value);
+      const meterPixels = appConfig.meterPixels;
 
       if (Number.isFinite(meterPixels) && meterPixels > 0) {
         const speedM = track.speed / meterPixels;
@@ -753,8 +805,13 @@
     startBtn.addEventListener("click", startCamera);
     stopBtn.addEventListener("click", stopCamera);
 
+    await loadConfig();
+
+    setInterval(() => {
+      loadConfig();
+    }, appConfig.configRefreshMs);
+
     initPoseLandmarker();
   </script>
-
 </body>
 </html>
