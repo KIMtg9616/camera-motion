@@ -1,11 +1,11 @@
 {
   // motion: 기존 모션 분석, coin: 코인 게임
   "mode": "coin",
-  
+
   // 화면에서 1m가 몇 px인지
   "meterPixels": 350,
-  
-  // 궤적 유지 시간
+
+  // motion 모드에서만 표시되는 궤적 유지 시간
   "trailSeconds": 10,
 
   // 설정 다시 읽는 간격, 5000ms = 5초
@@ -20,7 +20,16 @@
   // 코인 크기
   "coinRadius": 30,
 
-  // 코인 점수 범위
+  // 코인 점수 범위, 10 단위 랜덤
   "coinMinValue": 10,
-  "coinMaxValue": 100
+  "coinMaxValue": 100,
+
+  // 느린 코인 이동 속도, 단위 px/s
+  "coinSlowSpeed": 80,
+
+  // 빠른 코인 이동 속도, 단위 px/s
+  "coinFastSpeed": 220,
+
+  // 빠른 코인이 나올 비율, 0.35 = 약 35%
+  "coinFastRatio": 0.35
 }
