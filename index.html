@@ -306,7 +306,12 @@
       coinCount: 8,
       coinRadius: 30,
       coinMinValue: 10,
-      coinMaxValue: 100
+      coinMaxValue: 100,
+
+      // 코인 이동 속도(px/s)와 빠른 코인의 비율
+      coinSlowSpeed: 80,
+      coinFastSpeed: 220,
+      coinFastRatio: 0.35
     };
 
     let appConfig = { ...DEFAULT_CONFIG };
@@ -327,7 +332,8 @@
       gameOver: false,
       coins: [],
       scores: new Map(),
-      nextCoinId: 1
+      nextCoinId: 1,
+      lastUpdate: 0
     };
 
     const COLORS = [
@@ -393,6 +399,9 @@
       const coinRadius = Number(config.coinRadius);
       const coinMinValue = Number(config.coinMinValue);
       const coinMaxValue = Number(config.coinMaxValue);
+      const coinSlowSpeed = Number(config.coinSlowSpeed);
+      const coinFastSpeed = Number(config.coinFastSpeed);
+      const coinFastRatio = Number(config.coinFastRatio);
 
       const minValue = Number.isFinite(coinMinValue) && coinMinValue >= 10
         ? Math.round(coinMinValue / 10) * 10
@@ -430,7 +439,19 @@
             ? Math.min(Math.round(coinRadius), 80)
             : DEFAULT_CONFIG.coinRadius,
         coinMinValue: minValue,
-        coinMaxValue: maxValue
+        coinMaxValue: maxValue,
+        coinSlowSpeed:
+          Number.isFinite(coinSlowSpeed) && coinSlowSpeed >= 0
+            ? coinSlowSpeed
+            : DEFAULT_CONFIG.coinSlowSpeed,
+        coinFastSpeed:
+          Number.isFinite(coinFastSpeed) && coinFastSpeed >= 0
+            ? Math.max(coinFastSpeed, Number.isFinite(coinSlowSpeed) ? coinSlowSpeed : DEFAULT_CONFIG.coinSlowSpeed)
+            : DEFAULT_CONFIG.coinFastSpeed,
+        coinFastRatio:
+          Number.isFinite(coinFastRatio)
+            ? clamp(coinFastRatio, 0, 1)
+            : DEFAULT_CONFIG.coinFastRatio
       };
     }
 
@@ -453,8 +474,10 @@
           `현재 모드: <b>${modeText}</b><br>` +
           `보정값: <b>${meterText}</b><br>` +
           `게임 제한시간: <b>${appConfig.coinGameSeconds}초</b>, ` +
-          `코인 수: <b>${appConfig.coinCount}개</b>, ` +
-          `코인 액수: <b>${appConfig.coinMinValue}~${appConfig.coinMaxValue}</b>`;
+          `코인 수: <b>${appConfig.coinCount}개</b><br>` +
+          `코인 액수: <b>${appConfig.coinMinValue}~${appConfig.coinMaxValue}</b>, ` +
+          `느린 코인: <b>${appConfig.coinSlowSpeed}px/s</b>, ` +
+          `빠른 코인: <b>${appConfig.coinFastSpeed}px/s</b>`;
       } else {
         configInfoEl.innerHTML =
           `현재 모드: <b>${modeText}</b><br>` +
@@ -770,7 +793,10 @@
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       for (const track of tracks.values()) {
-        drawTrail(track, now);
+        // coin 모드에서는 사람 이동 궤적을 표시하지 않고, 뼈대와 정보만 표시합니다.
+        if (appConfig.mode === "motion") {
+          drawTrail(track, now);
+        }
 
         if (now - track.lastSeen < 300 && track.landmarks) {
           drawSkeleton(track);
@@ -921,6 +947,7 @@
             <strong style="color:#facc15">코인 게임</strong>
             <div>남은 시간: ${remaining}초</div>
             <div>코인 액수: ${appConfig.coinMinValue}~${appConfig.coinMaxValue}, 10 단위 랜덤</div>
+            <div>느린 코인/빠른 코인이 화면 안에서 움직입니다.</div>
             ${winnerText ? `<div class="winner">${winnerText}</div>` : ""}
             <div class="small">왼손/오른손 손목으로 코인을 잡으세요.</div>
           </div>` +
@@ -971,6 +998,7 @@
       coinGame.endsAt = now + appConfig.coinGameSeconds * 1000;
       coinGame.gameOver = false;
       coinGame.nextCoinId = 1;
+      coinGame.lastUpdate = now;
       coinGame.coins = [];
       coinGame.scores = new Map();
 
@@ -987,6 +1015,7 @@
       coinGame.coins = [];
       coinGame.scores = new Map();
       coinGame.nextCoinId = 1;
+      coinGame.lastUpdate = 0;
     }
 
     function adjustCoinCount() {
@@ -1011,6 +1040,10 @@
         statusEl.textContent = `게임 종료. ${getWinnerText()}`;
         return;
       }
+
+      const dt = Math.min(Math.max((now - coinGame.lastUpdate) / 1000, 0), 0.08);
+      coinGame.lastUpdate = now;
+      moveCoins(dt);
 
       for (const track of tracks.values()) {
         if (now - track.lastSeen > 400 || !track.landmarks) continue;
@@ -1040,12 +1073,18 @@
       const radius = appConfig.coinRadius;
       const margin = radius + 20;
 
+      const moving = makeCoinMovement();
+
       return {
         id: coinGame.nextCoinId++,
         x: randomBetween(margin, Math.max(margin, canvas.width - margin)),
         y: randomBetween(margin, Math.max(margin, canvas.height - margin)),
         radius,
-        value: randomCoinValue()
+        value: randomCoinValue(),
+        type: moving.type,
+        speed: moving.speed,
+        vx: moving.vx,
+        vy: moving.vy
       };
     }
 
@@ -1053,10 +1092,59 @@
       const radius = appConfig.coinRadius;
       const margin = radius + 20;
 
+      const moving = makeCoinMovement();
+
       coin.x = randomBetween(margin, Math.max(margin, canvas.width - margin));
       coin.y = randomBetween(margin, Math.max(margin, canvas.height - margin));
       coin.radius = radius;
       coin.value = randomCoinValue();
+      coin.type = moving.type;
+      coin.speed = moving.speed;
+      coin.vx = moving.vx;
+      coin.vy = moving.vy;
+    }
+
+    function makeCoinMovement() {
+      const isFast = Math.random() < appConfig.coinFastRatio;
+      const speed = isFast ? appConfig.coinFastSpeed : appConfig.coinSlowSpeed;
+      const angle = Math.random() * Math.PI * 2;
+
+      return {
+        type: isFast ? "fast" : "slow",
+        speed,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed
+      };
+    }
+
+    function moveCoins(dt) {
+      if (!dt || dt <= 0) return;
+
+      for (const coin of coinGame.coins) {
+        coin.x += coin.vx * dt;
+        coin.y += coin.vy * dt;
+
+        const minX = coin.radius;
+        const maxX = canvas.width - coin.radius;
+        const minY = coin.radius;
+        const maxY = canvas.height - coin.radius;
+
+        if (coin.x <= minX) {
+          coin.x = minX;
+          coin.vx = Math.abs(coin.vx);
+        } else if (coin.x >= maxX) {
+          coin.x = maxX;
+          coin.vx = -Math.abs(coin.vx);
+        }
+
+        if (coin.y <= minY) {
+          coin.y = minY;
+          coin.vy = Math.abs(coin.vy);
+        } else if (coin.y >= maxY) {
+          coin.y = maxY;
+          coin.vy = -Math.abs(coin.vy);
+        }
+      }
     }
 
     function randomCoinValue() {
@@ -1103,7 +1191,11 @@
         ctx.font = `bold ${Math.max(14, Math.round(coin.radius * 0.58))}px system-ui`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
-        ctx.fillText(String(coin.value), coin.x, coin.y);
+        ctx.fillText(String(coin.value), coin.x, coin.y - 2);
+
+        ctx.font = `bold ${Math.max(9, Math.round(coin.radius * 0.32))}px system-ui`;
+        ctx.fillStyle = coin.type === "fast" ? "#7f1d1d" : "#064e3b";
+        ctx.fillText(coin.type === "fast" ? "FAST" : "SLOW", coin.x, coin.y + coin.radius * 0.42);
 
         ctx.restore();
       }
