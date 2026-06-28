@@ -1,11 +1,26 @@
 {
+  // motion: 기존 모션 분석, coin: 코인 게임
   "mode": "motion",
+  
+  // 화면에서 1m가 몇 px인지
   "meterPixels": 350,
+  
+  // 궤적 유지 시간
   "trailSeconds": 10,
+
+  // 설정 다시 읽는 간격, 5000ms = 5초
   "configRefreshMs": 5000,
-  "coinGameSeconds": 60,
+
+  // 코인 게임 제한시간
+  "coinGameSeconds": 20,
+
+  // 화면에 동시에 표시되는 코인 개수
   "coinCount": 8,
+
+  // 코인 크기
   "coinRadius": 30,
+
+  // 코인 점수 범위
   "coinMinValue": 10,
   "coinMaxValue": 100
 }
