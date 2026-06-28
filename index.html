@@ -311,7 +311,10 @@
       // 코인 이동 속도(px/s)와 빠른 코인의 비율
       coinSlowSpeed: 80,
       coinFastSpeed: 220,
-      coinFastRatio: 0.35
+      coinFastRatio: 0.35,
+
+      // true이면 카메라 화면을 거울처럼 좌우반전합니다.
+      mirrorCamera: true
     };
 
     let appConfig = { ...DEFAULT_CONFIG };
@@ -386,6 +389,18 @@
   }
 }
 
+    function parseConfigBoolean(value, defaultValue) {
+      if (value === undefined || value === null) return defaultValue;
+      if (typeof value === "boolean") return value;
+
+      const textValue = String(value).trim().toLowerCase();
+
+      if (["true", "1", "yes", "on"].includes(textValue)) return true;
+      if (["false", "0", "no", "off"].includes(textValue)) return false;
+
+      return defaultValue;
+    }
+
     function normalizeConfig(config) {
       const rawMode = String(config.mode ?? DEFAULT_CONFIG.mode).trim().toLowerCase();
       const mode = rawMode === "coin" ? "coin" : "motion";
@@ -402,6 +417,7 @@
       const coinSlowSpeed = Number(config.coinSlowSpeed);
       const coinFastSpeed = Number(config.coinFastSpeed);
       const coinFastRatio = Number(config.coinFastRatio);
+      const mirrorCamera = parseConfigBoolean(config.mirrorCamera, DEFAULT_CONFIG.mirrorCamera);
 
       const minValue = Number.isFinite(coinMinValue) && coinMinValue >= 10
         ? Math.round(coinMinValue / 10) * 10
@@ -451,7 +467,8 @@
         coinFastRatio:
           Number.isFinite(coinFastRatio)
             ? clamp(coinFastRatio, 0, 1)
-            : DEFAULT_CONFIG.coinFastRatio
+            : DEFAULT_CONFIG.coinFastRatio,
+        mirrorCamera
       };
     }
 
@@ -469,9 +486,14 @@
         ? `1m = ${appConfig.meterPixels}px, m/s와 m/s² 표시`
         : `보정 사용 안 함, px/s와 px/s² 표시`;
 
+      const cameraText = appConfig.mirrorCamera ? "좌우반전" : "기본 방향";
+      video.style.transform = appConfig.mirrorCamera ? "scaleX(-1)" : "none";
+      video.style.transformOrigin = "center center";
+
       if (appConfig.mode === "coin") {
         configInfoEl.innerHTML =
           `현재 모드: <b>${modeText}</b><br>` +
+          `카메라: <b>${cameraText}</b><br>` +
           `보정값: <b>${meterText}</b><br>` +
           `게임 제한시간: <b>${appConfig.coinGameSeconds}초</b>, ` +
           `코인 수: <b>${appConfig.coinCount}개</b><br>` +
@@ -481,6 +503,7 @@
       } else {
         configInfoEl.innerHTML =
           `현재 모드: <b>${modeText}</b><br>` +
+          `카메라: <b>${cameraText}</b><br>` +
           `보정값: <b>${meterText}</b><br>` +
           `궤적 유지: <b>${appConfig.trailSeconds}초</b>`;
       }
@@ -765,7 +788,7 @@
         const visibility = lm.visibility ?? 1;
 
         if (visibility >= MIN_LANDMARK_VISIBILITY) {
-          sumX += clamp(lm.x, 0, 1) * canvas.width;
+          sumX += toScreenX(clamp(lm.x, 0, 1) * canvas.width);
           sumY += clamp(lm.y, 0, 1) * canvas.height;
           count++;
         }
@@ -859,8 +882,8 @@
         if (!isVisible(p1) || !isVisible(p2)) continue;
 
         ctx.beginPath();
-        ctx.moveTo(p1.x * canvas.width, p1.y * canvas.height);
-        ctx.lineTo(p2.x * canvas.width, p2.y * canvas.height);
+        ctx.moveTo(toScreenX(p1.x * canvas.width), p1.y * canvas.height);
+        ctx.lineTo(toScreenX(p2.x * canvas.width), p2.y * canvas.height);
         ctx.stroke();
       }
 
@@ -868,7 +891,7 @@
         if (!isVisible(lm)) continue;
 
         ctx.beginPath();
-        ctx.arc(lm.x * canvas.width, lm.y * canvas.height, 4, 0, Math.PI * 2);
+        ctx.arc(toScreenX(lm.x * canvas.width), lm.y * canvas.height, 4, 0, Math.PI * 2);
         ctx.fill();
       }
 
@@ -1255,7 +1278,7 @@
         if (!isVisible(lm)) continue;
 
         points.push({
-          x: clamp(lm.x, 0, 1) * canvas.width,
+          x: toScreenX(clamp(lm.x, 0, 1) * canvas.width),
           y: clamp(lm.y, 0, 1) * canvas.height
         });
       }
@@ -1317,6 +1340,10 @@
         speedText: `${track.speed.toFixed(0)} px/s`,
         accelText: `${track.accel.toFixed(0)} px/s²`
       };
+    }
+
+    function toScreenX(x) {
+      return appConfig.mirrorCamera ? canvas.width - x : x;
     }
 
     function isVisible(lm) {
